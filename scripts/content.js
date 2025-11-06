@@ -24,6 +24,7 @@ const ui = {
     container: null,
     addButton: null,
     track: null,
+    trackBaseline: null,
     tooltip: null,
     textarea: null,
     cancelButton: null,
@@ -36,7 +37,66 @@ const ui = {
     previewText: null
 };
 
+const themePalettes = {
+    dark: {
+        textPrimary: '#f1f1f1',
+        textSecondary: '#aaaaaa',
+        surfaceMuted: 'rgba(255, 255, 255, 0.06)',
+        surfaceBorder: '1px solid rgba(255, 255, 255, 0.08)',
+        surfaceBaseline: 'rgba(255, 255, 255, 0.2)',
+        tooltipBackground: '#202124',
+        tooltipText: '#ffffff',
+        tooltipShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
+        textareaBackground: '#121212',
+        textareaText: '#ffffff',
+        textareaBorder: '1px solid #3f3f3f',
+        deleteText: '#ff7b7b',
+        deleteBorder: '1px solid rgba(255, 123, 123, 0.6)',
+        cancelText: '#aaaaaa',
+        previewBackground: 'rgba(32, 33, 36, 0.95)',
+        previewBorder: '1px solid rgba(255, 255, 255, 0.08)',
+        previewShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
+        previewText: '#ffffff',
+        noteDotBorder: '1px solid rgba(10, 28, 46, 0.6)',
+        noteDotShadow: '0 3px 8px rgba(0, 0, 0, 0.25)',
+        noteDotShadowActive: '0 6px 14px rgba(62, 166, 255, 0.5)'
+    },
+    light: {
+        textPrimary: '#0f0f0f',
+        textSecondary: '#606060',
+        surfaceMuted: 'rgba(0, 0, 0, 0.04)',
+        surfaceBorder: '1px solid rgba(0, 0, 0, 0.08)',
+        surfaceBaseline: 'rgba(0, 0, 0, 0.15)',
+        tooltipBackground: '#ffffff',
+        tooltipText: '#0f0f0f',
+        tooltipShadow: '0 12px 30px rgba(15, 23, 42, 0.16)',
+        textareaBackground: '#ffffff',
+        textareaText: '#0f0f0f',
+        textareaBorder: '1px solid rgba(0, 0, 0, 0.12)',
+        deleteText: '#b3261e',
+        deleteBorder: '1px solid rgba(179, 38, 30, 0.35)',
+        cancelText: '#5f6368',
+        previewBackground: 'rgba(255, 255, 255, 0.98)',
+        previewBorder: '1px solid rgba(15, 23, 42, 0.08)',
+        previewShadow: '0 10px 28px rgba(15, 23, 42, 0.14)',
+        previewText: '#202124',
+        noteDotBorder: '1px solid rgba(10, 28, 46, 0.25)',
+        noteDotShadow: '0 3px 8px rgba(15, 23, 42, 0.16)',
+        noteDotShadowActive: '0 6px 14px rgba(62, 166, 255, 0.4)'
+    }
+};
+
+const themeState = {
+    mode: null,
+    palette: themePalettes.dark
+};
+
+let themeObserver = null;
+let themeMediaQuery = null;
+let themeAppObserver = null;
+
 let globalListenersAttached = false;
+let tooltipDismissCleanup = null;
 
 const applyStyles = (element, styles) => {
     Object.assign(element.style, styles);
@@ -50,7 +110,311 @@ const createButton = (label, styles) => {
     return button;
 };
 
-const createTooltip = () => {
+const parseRgbColor = (value) => {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    const match = value.match(/rgba?\(([^)]+)\)/i);
+    if (!match) {
+        return null;
+    }
+
+    const parts = match[1]
+        .split(',')
+        .map((part) => part.trim())
+        .filter(Boolean);
+
+    if (parts.length < 3) {
+        return null;
+    }
+
+    const r = Number.parseFloat(parts[0]);
+    const g = Number.parseFloat(parts[1]);
+    const b = Number.parseFloat(parts[2]);
+    const a = parts.length > 3 ? Number.parseFloat(parts[3]) : 1;
+
+    if ([r, g, b].some((component) => !Number.isFinite(component))) {
+        return null;
+    }
+
+    return { r, g, b, a: Number.isFinite(a) ? a : 1 };
+};
+
+const parseHexColor = (value) => {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    const trimmed = value.trim().replace(/^#/, '');
+    if (![3, 4, 6, 8].includes(trimmed.length)) {
+        return null;
+    }
+
+    const expand = (component) => {
+        if (component.length === 1) {
+            return component.repeat(2);
+        }
+        return component;
+    };
+
+    const pairs =
+        trimmed.length === 3 || trimmed.length === 4
+            ? trimmed.split('').map((char) => expand(char))
+            : trimmed.match(/.{2}/g);
+
+    if (!pairs || (pairs.length !== 3 && pairs.length !== 4)) {
+        return null;
+    }
+
+    const [r, g, b, a] = pairs.map((pair) => Number.parseInt(pair, 16));
+    if ([r, g, b].some((component) => !Number.isFinite(component))) {
+        return null;
+    }
+
+    return {
+        r,
+        g,
+        b,
+        a: Number.isFinite(a) ? a / 255 : 1
+    };
+};
+
+const parseColorString = (value) => {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    if (value.includes('var(')) {
+        return null;
+    }
+
+    const trimmed = value.trim();
+    if (!trimmed) {
+        return null;
+    }
+
+    if (trimmed.startsWith('#')) {
+        return parseHexColor(trimmed);
+    }
+
+    if (trimmed.startsWith('rgb')) {
+        return parseRgbColor(trimmed);
+    }
+
+    return null;
+};
+
+const calculateLuminance = (color) => {
+    if (!color) {
+        return null;
+    }
+
+    const alpha = Number.isFinite(color.a) ? color.a : 1;
+    if (alpha <= 0.05) {
+        return null;
+    }
+
+    const r = color.r / 255;
+    const g = color.g / 255;
+    const b = color.b / 255;
+
+    const transform = (channel) =>
+        channel <= 0.03928 ? channel / 12.92 : Math.pow((channel + 0.055) / 1.055, 2.4);
+
+    return 0.2126 * transform(r) + 0.7152 * transform(g) + 0.0722 * transform(b);
+};
+
+const resolveColorSchemeString = (value) => {
+    if (!value || typeof value !== 'string') {
+        return null;
+    }
+
+    const normalized = value.toLowerCase();
+    const hasLight = normalized.includes('light');
+    const hasDark = normalized.includes('dark');
+
+    if (hasDark && !hasLight) {
+        return 'dark';
+    }
+    if (hasLight && !hasDark) {
+        return 'light';
+    }
+
+    if (hasDark && hasLight) {
+        const first = normalized.trim().split(/\s+/)[0];
+        if (first === 'dark' || first === 'light') {
+            return first;
+        }
+    }
+
+    return null;
+};
+
+const detectThemeMode = () => {
+    const root = document.documentElement;
+    const htmlAttr = root ? root.getAttribute('dark') : null;
+
+    if (htmlAttr === '' || htmlAttr === 'true') {
+        return 'dark';
+    }
+    if (htmlAttr === 'false') {
+        return 'light';
+    }
+    if (root && root.hasAttribute('dark') && htmlAttr !== 'false') {
+        return 'dark';
+    }
+
+    const inlineScheme = root && typeof root.style !== 'undefined' ? root.style.colorScheme : null;
+    const resolvedInlineScheme = resolveColorSchemeString(inlineScheme);
+    if (resolvedInlineScheme) {
+        return resolvedInlineScheme;
+    }
+
+    const rootStyle = root ? window.getComputedStyle(root) : null;
+    const computedScheme = rootStyle ? resolveColorSchemeString(rootStyle.colorScheme) : null;
+    if (computedScheme) {
+        return computedScheme;
+    }
+
+    const appElement = document.querySelector('ytd-app');
+    if (appElement) {
+        const appDarkAttr = appElement.getAttribute('dark') || appElement.getAttribute('dark-theme');
+        const appLightAttr = appElement.getAttribute('light') || appElement.getAttribute('light-theme');
+        if (appDarkAttr && appDarkAttr !== 'false') {
+            return 'dark';
+        }
+        if (appLightAttr && appLightAttr !== 'false') {
+            return 'light';
+        }
+        if (appDarkAttr === 'false') {
+            return 'light';
+        }
+        if (
+            appElement.classList.contains('dark') ||
+            appElement.classList.contains('dark-theme') ||
+            appElement.matches('[dark-theme]')
+        ) {
+            return 'dark';
+        }
+        if (
+            appElement.classList.contains('light') ||
+            appElement.classList.contains('light-theme') ||
+            appElement.matches('[light-theme]')
+        ) {
+            return 'light';
+        }
+
+        const appScheme = resolveColorSchemeString(
+            typeof appElement.style !== 'undefined' ? appElement.style.colorScheme : null
+        );
+        if (appScheme) {
+            return appScheme;
+        }
+        const appComputedStyle = window.getComputedStyle(appElement);
+        const appComputedScheme = resolveColorSchemeString(appComputedStyle.colorScheme);
+        if (appComputedScheme) {
+            return appComputedScheme;
+        }
+    }
+
+    const luminanceCandidates = [root, appElement, document.querySelector('#content'), document.body];
+
+    for (const candidate of luminanceCandidates) {
+        if (!candidate) {
+            continue;
+        }
+
+        const style = window.getComputedStyle(candidate);
+        const colorStrings = [
+            style.backgroundColor,
+            style.getPropertyValue('--yt-spec-base-background'),
+            style.getPropertyValue('--yt-spec-base-background-a'),
+            style.getPropertyValue('--yt-spec-general-background-a'),
+            style.getPropertyValue('--yt-spec-additive-background'),
+            style.getPropertyValue('--yt-spec-raised-background')
+        ];
+
+        for (const colorString of colorStrings) {
+            const parsed = parseColorString(colorString);
+            const luminance = calculateLuminance(parsed);
+            if (Number.isFinite(luminance)) {
+                if (luminance >= 0.5) {
+                    return 'light';
+                }
+                if (luminance <= 0.4) {
+                    return 'dark';
+                }
+            }
+        }
+    }
+
+    if (window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches) {
+        return 'dark';
+    }
+
+    return 'light';
+};
+
+const getThemePalette = () => {
+    const detectedMode = detectThemeMode();
+    if (detectedMode !== themeState.mode) {
+        themeState.mode = detectedMode;
+        themeState.palette = themePalettes[detectedMode] || themePalettes.dark;
+    }
+    return themeState.palette;
+};
+
+const applyThemeToUi = (palette) => {
+    if (!palette) {
+        return;
+    }
+
+    if (ui.heading) {
+        ui.heading.style.color = palette.textPrimary;
+    }
+    if (ui.timestampLabel) {
+        ui.timestampLabel.style.color = palette.textSecondary;
+    }
+    if (ui.container) {
+        ui.container.style.color = palette.textPrimary;
+    }
+    if (ui.track) {
+        ui.track.style.backgroundColor = palette.surfaceMuted;
+        ui.track.style.border = palette.surfaceBorder;
+    }
+    if (ui.trackBaseline) {
+        ui.trackBaseline.style.backgroundColor = palette.surfaceBaseline;
+    }
+    if (ui.emptyState) {
+        ui.emptyState.style.color = palette.textSecondary;
+    }
+    if (ui.tooltip) {
+        ui.tooltip.style.backgroundColor = palette.tooltipBackground;
+        ui.tooltip.style.color = palette.tooltipText;
+        ui.tooltip.style.boxShadow = palette.tooltipShadow;
+    }
+    if (ui.textarea) {
+        ui.textarea.style.backgroundColor = palette.textareaBackground;
+        ui.textarea.style.color = palette.textareaText;
+        ui.textarea.style.border = palette.textareaBorder;
+    }
+    if (ui.deleteButton) {
+        ui.deleteButton.style.color = palette.deleteText;
+        ui.deleteButton.style.border = palette.deleteBorder;
+    }
+    if (ui.cancelButton) {
+        ui.cancelButton.style.color = palette.cancelText;
+    }
+    if (ui.previewText) {
+        ui.previewText.style.backgroundColor = palette.previewBackground;
+        ui.previewText.style.color = palette.previewText;
+        ui.previewText.style.border = palette.previewBorder;
+        ui.previewText.style.boxShadow = palette.previewShadow;
+    }
+};
+
+const createTooltip = (palette) => {
     const tooltip = document.createElement('div');
     tooltip.id = TOOLTIP_ID;
     tooltip.setAttribute('role', 'dialog');
@@ -65,10 +429,10 @@ const createTooltip = () => {
         width: '320px',
         padding: '16px',
         boxSizing: 'border-box',
-        backgroundColor: '#202124',
-        color: '#ffffff',
+        backgroundColor: palette.tooltipBackground,
+        color: palette.tooltipText,
         borderRadius: '12px',
-        boxShadow: '0 10px 30px rgba(0, 0, 0, 0.35)',
+        boxShadow: palette.tooltipShadow,
         zIndex: '5000'
     });
 
@@ -81,7 +445,7 @@ const createTooltip = () => {
     const timestampLabel = document.createElement('span');
     applyStyles(timestampLabel, {
         fontSize: '12px',
-        color: '#aaaaaa'
+        color: palette.textSecondary
     });
 
     const textarea = document.createElement('textarea');
@@ -91,9 +455,9 @@ const createTooltip = () => {
         width: '100%',
         maxHeight: '200px',
         resize: 'vertical',
-        backgroundColor: '#121212',
-        color: '#ffffff',
-        border: '1px solid #3f3f3f',
+        backgroundColor: palette.textareaBackground,
+        color: palette.textareaText,
+        border: palette.textareaBorder,
         borderRadius: '8px',
         padding: '12px',
         fontSize: '14px',
@@ -122,8 +486,8 @@ const createTooltip = () => {
 
     const deleteButton = createButton('Delete', {
         background: 'transparent',
-        color: '#ff7b7b',
-        border: '1px solid rgba(255, 123, 123, 0.6)',
+        color: palette.deleteText,
+        border: palette.deleteBorder,
         padding: '8px 12px',
         borderRadius: '999px',
         fontSize: '13px',
@@ -133,7 +497,7 @@ const createTooltip = () => {
 
     const cancelButton = createButton('Cancel', {
         background: 'transparent',
-        color: '#aaaaaa',
+        color: palette.cancelText,
         border: 'none',
         padding: '8px 12px',
         fontSize: '14px',
@@ -173,7 +537,7 @@ const createTooltip = () => {
     };
 };
 
-const createPreviewTooltip = () => {
+const createPreviewTooltip = (palette) => {
     const wrapper = document.createElement('div');
     wrapper.id = PREVIEW_TOOLTIP_ID;
     wrapper.setAttribute('aria-hidden', 'true');
@@ -189,14 +553,14 @@ const createPreviewTooltip = () => {
 
     const bubble = document.createElement('div');
     applyStyles(bubble, {
-        backgroundColor: 'rgba(32, 33, 36, 0.95)',
-        color: '#ffffff',
+        backgroundColor: palette.previewBackground,
+        color: palette.previewText,
         padding: '10px 12px',
         borderRadius: '10px',
         fontSize: '13px',
         lineHeight: '1.4',
-        boxShadow: '0 8px 24px rgba(0, 0, 0, 0.35)',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
+        boxShadow: palette.previewShadow,
+        border: palette.previewBorder,
         pointerEvents: 'none',
         whiteSpace: 'pre-line',
         wordBreak: 'break-word'
@@ -207,7 +571,7 @@ const createPreviewTooltip = () => {
     return { previewTooltip: wrapper, previewText: bubble };
 };
 
-const createContainer = () => {
+const createContainer = (palette) => {
     const container = document.createElement('div');
     container.id = CONTAINER_ID;
     applyStyles(container, {
@@ -231,7 +595,7 @@ const createContainer = () => {
     title.textContent = 'Video Notes';
     applyStyles(title, {
         margin: '0',
-        color: '#f1f1f1',
+        color: palette.textPrimary,
         fontSize: '20px',
         fontWeight: '600'
     });
@@ -264,8 +628,8 @@ const createContainer = () => {
         position: 'relative',
         height: '36px',
         borderRadius: '18px',
-        backgroundColor: 'rgba(255, 255, 255, 0.06)',
-        border: '1px solid rgba(255, 255, 255, 0.08)',
+        backgroundColor: palette.surfaceMuted,
+        border: palette.surfaceBorder,
         display: 'flex',
         alignItems: 'center',
         justifyContent: 'center',
@@ -279,7 +643,7 @@ const createContainer = () => {
         left: '12px',
         right: '12px',
         height: '2px',
-        backgroundColor: 'rgba(255, 255, 255, 0.2)',
+        backgroundColor: palette.surfaceBaseline,
         transform: 'translateY(-50%)'
     });
 
@@ -288,7 +652,7 @@ const createContainer = () => {
     const emptyState = document.createElement('span');
     emptyState.textContent = 'No notes yet. Click + to capture a thought.';
     applyStyles(emptyState, {
-        color: '#aaaaaa',
+        color: palette.textSecondary,
         fontSize: '13px'
     });
 
@@ -300,8 +664,8 @@ const createContainer = () => {
         deleteButton,
         cancelButton,
         saveButton
-    } = createTooltip();
-    const { previewTooltip, previewText } = createPreviewTooltip();
+    } = createTooltip(palette);
+    const { previewTooltip, previewText } = createPreviewTooltip(palette);
 
     container.appendChild(header);
     container.appendChild(track);
@@ -313,6 +677,7 @@ const createContainer = () => {
         container,
         addButton,
         track,
+        trackBaseline,
         emptyState,
         tooltip,
         heading,
@@ -449,6 +814,10 @@ const closeTooltip = () => {
     state.activeNoteId = null;
     state.tooltipAnchor = null;
     hideNotePreview();
+    if (typeof tooltipDismissCleanup === 'function') {
+        tooltipDismissCleanup();
+        tooltipDismissCleanup = null;
+    }
 };
 
 const resolveAnchor = (anchorCandidate, fallbackNoteId, allowButtonFallback = true) => {
@@ -608,6 +977,35 @@ const attachResponsiveListeners = () => {
     window.addEventListener('scroll', repositionTooltip, true);
 };
 
+const attachTooltipDismissListener = () => {
+    if (tooltipDismissCleanup) {
+        return;
+    }
+
+    const handlePointerDown = (event) => {
+        if (!ui.tooltip || ui.tooltip.style.display !== 'flex') {
+            return;
+        }
+
+        const target = event.target;
+        if (target instanceof Node) {
+            if (ui.tooltip.contains(target)) {
+                return;
+            }
+            if (state.tooltipAnchor && state.tooltipAnchor.contains && state.tooltipAnchor.contains(target)) {
+                return;
+            }
+        }
+
+        closeTooltip();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown, true);
+    tooltipDismissCleanup = () => {
+        document.removeEventListener('pointerdown', handlePointerDown, true);
+    };
+};
+
 const openTooltip = ({ mode, timestamp, note, anchor }) => {
     if (!ui.tooltip) {
         return;
@@ -643,6 +1041,7 @@ const openTooltip = ({ mode, timestamp, note, anchor }) => {
     hideNotePreview();
     ui.tooltip.style.display = 'flex';
     ui.tooltip.style.visibility = 'hidden';
+    attachTooltipDismissListener();
 
     window.requestAnimationFrame(() => {
         if (!ui.tooltip || ui.tooltip.style.display !== 'flex') {
@@ -665,6 +1064,7 @@ const renderNotesTrack = () => {
         return;
     }
 
+    const palette = getThemePalette();
     const existingDots = ui.track.querySelectorAll('[data-note-id]');
     existingDots.forEach((node) => node.remove());
 
@@ -696,25 +1096,25 @@ const renderNotesTrack = () => {
             width: '16px',
             height: '16px',
             borderRadius: '999px',
-            border: '1px solid rgba(10, 28, 46, 0.6)',
+            border: palette.noteDotBorder,
             background:
                 'radial-gradient(circle at 30% 30%, rgba(255, 255, 255, 0.95) 0%, #cde8ff 45%, #3ea6ff 100%)',
             transform: 'translate(-50%, -50%)',
             cursor: 'pointer',
             transition: 'transform 140ms ease, box-shadow 140ms ease',
-            boxShadow: '0 3px 8px rgba(0, 0, 0, 0.25)',
+            boxShadow: palette.noteDotShadow,
             outline: 'none'
         });
 
         const highlightDot = () => {
             dot.style.transform = 'translate(-50%, -50%) scale(1.25)';
-            dot.style.boxShadow = '0 6px 14px rgba(62, 166, 255, 0.5)';
+            dot.style.boxShadow = palette.noteDotShadowActive;
             showNotePreview(note, dot);
         };
 
         const resetDot = () => {
             dot.style.transform = 'translate(-50%, -50%)';
-            dot.style.boxShadow = '0 3px 8px rgba(0, 0, 0, 0.25)';
+            dot.style.boxShadow = palette.noteDotShadow;
             if (state.previewNoteId === note.id) {
                 hideNotePreview();
             }
@@ -740,6 +1140,70 @@ const renderNotesTrack = () => {
     });
 
     repositionTooltip();
+};
+
+const handleThemeChange = () => {
+    const palette = getThemePalette();
+    applyThemeToUi(palette);
+    if (ui.track) {
+        renderNotesTrack();
+    }
+};
+
+const watchThemeChanges = () => {
+    if (themeObserver) {
+        return;
+    }
+
+    const scheduleUpdate = () => {
+        window.requestAnimationFrame(handleThemeChange);
+    };
+
+    themeObserver = new MutationObserver(scheduleUpdate);
+
+    const root = document.documentElement;
+    if (root) {
+        themeObserver.observe(root, {
+            attributes: true,
+            attributeFilter: ['dark', 'class', 'style']
+        });
+    }
+
+    const observeYtdApp = () => {
+        const appElement = document.querySelector('ytd-app');
+        if (!appElement) {
+            return false;
+        }
+
+        themeObserver.observe(appElement, {
+            attributes: true,
+            attributeFilter: ['dark', 'class', 'style']
+        });
+        return true;
+    };
+
+    if (!observeYtdApp()) {
+        themeAppObserver = new MutationObserver(() => {
+            if (observeYtdApp() && themeAppObserver) {
+                themeAppObserver.disconnect();
+                themeAppObserver = null;
+            }
+        });
+
+        if (root) {
+            themeAppObserver.observe(root, { childList: true, subtree: true });
+        }
+    }
+
+    if (window.matchMedia) {
+        themeMediaQuery = window.matchMedia('(prefers-color-scheme: dark)');
+        const mediaListener = () => scheduleUpdate();
+        if (themeMediaQuery.addEventListener) {
+            themeMediaQuery.addEventListener('change', mediaListener);
+        } else if (themeMediaQuery.addListener) {
+            themeMediaQuery.addListener(mediaListener);
+        }
+    }
 };
 
 const handleNoteDotClick = (noteId, anchor) => {
@@ -924,10 +1388,12 @@ const insertContainer = () => {
         return true;
     }
 
-    const elements = createContainer();
+    const palette = getThemePalette();
+    const elements = createContainer(palette);
     ui.container = elements.container;
     ui.addButton = elements.addButton;
     ui.track = elements.track;
+    ui.trackBaseline = elements.trackBaseline;
     ui.emptyState = elements.emptyState;
     ui.tooltip = elements.tooltip;
     ui.heading = elements.heading;
@@ -940,6 +1406,7 @@ const insertContainer = () => {
     ui.previewText = elements.previewText;
 
     metadataContainer.insertBefore(elements.container, titleContainer);
+    applyThemeToUi(palette);
     attachUiListeners();
     return true;
 };
@@ -970,6 +1437,8 @@ const startObserving = () => {
 
 const initialize = () => {
     attachResponsiveListeners();
+    watchThemeChanges();
+    handleThemeChange();
     if (!ensureUiReady()) {
         startObserving();
     }
