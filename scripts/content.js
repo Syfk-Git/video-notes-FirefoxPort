@@ -1604,13 +1604,20 @@ const insertContainer = () => {
     return true;
 };
 
-const ensureUiReady = () => {
-    const inserted = insertContainer();
-    if (inserted) {
-        assignVideoElement();
-        refreshNotesForCurrentVideo().catch(() => {});
+const ensureUiReady = (videoIdOverride) => {
+    const videoId = typeof videoIdOverride === 'string' ? videoIdOverride : getVideoIdFromLocation();
+    if (!videoId) {
+        return false;
     }
-    return inserted;
+
+    const ready = insertContainer();
+    if (!ready) {
+        return false;
+    }
+
+    assignVideoElement();
+    renderNotesTrack();
+    return true;
 };
 
 const observer = new MutationObserver(() => {
@@ -1628,22 +1635,29 @@ const startObserving = () => {
     observer.observe(document.body, OBSERVER_OPTIONS);
 };
 
+const handleRouteChange = () => {
+    refreshNotesForCurrentVideo().catch(() => {});
+    const videoId = getVideoIdFromLocation();
+    if (!videoId) {
+        observer.disconnect();
+        return;
+    }
+
+    if (!ensureUiReady(videoId)) {
+        startObserving();
+    }
+};
+
 const initialize = () => {
     attachResponsiveListeners();
     attachShortcutListener();
     watchThemeChanges();
     handleThemeChange();
-    if (!ensureUiReady()) {
-        startObserving();
-    }
+    handleRouteChange();
 };
 
 initialize();
 
 ['yt-navigate-finish', 'yt-page-data-updated'].forEach((eventName) => {
-    window.addEventListener(eventName, () => {
-        if (!ensureUiReady()) {
-            startObserving();
-        }
-    });
+    window.addEventListener(eventName, handleRouteChange);
 });
