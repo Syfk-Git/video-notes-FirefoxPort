@@ -3,7 +3,7 @@
 Video Notes is a lightweight YouTube companion that ships two pieces from this repo:
 
 - `extension/` &mdash; a Manifest V3 Chrome/Chromium extension that injects an inline note workspace, timeline markers, and a popup dashboard for searchable, timestamped annotations.
-- `landing/` &mdash; a static marketing page (HTML/CSS/JS only) used for sharing the feature tour and installation instructions.
+- `landing/` &mdash; a static page (HTML/CSS/JS only) used for sharing the feature tour and installation instructions.
 
 ## Quick start
 
@@ -14,10 +14,6 @@ Video Notes is a lightweight YouTube companion that ships two pieces from this r
 
 ### Landing page
 1. `cd landing`
-2. Serve the folder with any static server, e.g. `npx serve .` or `python3 -m http.server`.
-3. Deploys cleanly to any static host (GitHub Pages, Netlify, etc.) because it has no build step or dependencies.
+2. Serve the folder with any static server, e.g. `npx serve .` or `python3 -m http.server` or just open `landing/index.html` in your browser like we are in the 90s.
+3. Deploys cleanly to any static host (GitHub Pages) because it has no build step or dependencies.
 
-## Development notes
-- No project-wide dependencies: linting/formatting/tooling is opt-in per directory.
-- Keep DOM/storage keys in uppercase snake case to match the extension code style.
-- When contributing, describe UI-visible changes and manual test steps in PRs to keep reviews fast.
